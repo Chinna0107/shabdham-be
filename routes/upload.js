@@ -13,7 +13,7 @@ cloudinary.config({
 // Use memory storage so we get a buffer to upload to Cloudinary
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB max
+  limits: { fileSize: 150 * 1024 * 1024 }, // 150MB max
 });
 
 // POST /api/upload/image — upload an image to Cloudinary

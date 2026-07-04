@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const pool = require('../db');
+const authMiddleware = require('../middleware/auth');
 
 async function resolveCategoryId(categoryName) {
   if (!categoryName) return null;
@@ -14,14 +15,15 @@ async function resolveCategoryId(categoryName) {
 }
 
 // Admin: dashboard stats
-router.get('/admin/stats', async (req, res) => {
+router.get('/admin/stats', authMiddleware, async (req, res) => {
   try {
-    const [total, published, drafts, cats, breaking] = await Promise.all([
+    const [total, published, drafts, cats, breaking, pending] = await Promise.all([
       pool.query('SELECT COUNT(*) FROM news'),
-      pool.query('SELECT COUNT(*) FROM news WHERE is_published=true'),
+      pool.query('SELECT COUNT(*) FROM news WHERE is_published=true AND status=\'approved\''),
       pool.query('SELECT COUNT(*) FROM news WHERE is_published=false'),
       pool.query('SELECT COUNT(*) FROM categories'),
       pool.query('SELECT COUNT(*) FROM breaking_news WHERE is_active=true'),
+      pool.query('SELECT COUNT(*) FROM news WHERE status=\'pending\''),
     ]);
     const recent = await pool.query(
       `SELECT n.title, n.slug, n.image, n.created_at, c.name AS category
@@ -39,6 +41,7 @@ router.get('/admin/stats', async (req, res) => {
       drafts: parseInt(drafts.rows[0].count),
       categories: parseInt(cats.rows[0].count),
       activeBreaking: parseInt(breaking.rows[0].count),
+      pending: parseInt(pending.rows[0].count),
       recentNews: recent.rows,
       topAuthors: topAuthors.rows,
     });
@@ -48,7 +51,7 @@ router.get('/admin/stats', async (req, res) => {
 });
 
 // Admin: all news including unpublished
-router.get('/admin/all', async (req, res) => {
+router.get('/admin/all', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT n.*, c.name AS category FROM news n
@@ -61,8 +64,40 @@ router.get('/admin/all', async (req, res) => {
   }
 });
 
+// Admin: pending news
+router.get('/admin/pending', authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT n.*, c.name AS category, u.name AS creator_name FROM news n
+       LEFT JOIN categories c ON n.category_id=c.id
+       LEFT JOIN admin_users u ON n.created_by=u.id
+       WHERE n.status='pending'
+       ORDER BY n.created_at DESC`
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Employee: my news
+router.get('/employee/my-news', authMiddleware, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT n.*, c.name AS category FROM news n
+       LEFT JOIN categories c ON n.category_id=c.id
+       WHERE n.created_by=$1
+       ORDER BY n.created_at DESC`,
+      [req.admin.id]
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Admin: all trending
-router.get('/admin/trending', async (req, res) => {
+router.get('/admin/trending', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT n.*, c.name AS category FROM news n
@@ -81,7 +116,7 @@ router.get('/trending', async (req, res) => {
     const result = await pool.query(
       `SELECT n.*, c.name AS category FROM news n
        LEFT JOIN categories c ON n.category_id=c.id
-       WHERE n.is_trending=true AND n.is_published=true ORDER BY n.created_at DESC`
+       WHERE n.is_trending=true AND n.is_published=true AND n.status='approved' ORDER BY n.created_at DESC`
     );
     res.json(result.rows);
   } catch (err) {
@@ -96,7 +131,7 @@ router.get('/', async (req, res) => {
     let query = `
       SELECT n.*, c.name AS category, c.slug AS category_slug
       FROM news n LEFT JOIN categories c ON n.category_id=c.id
-      WHERE n.is_published=true
+      WHERE n.is_published=true AND n.status='approved'
     `;
     const params = [];
     if (category) {
@@ -121,7 +156,7 @@ router.get('/:slug', async (req, res) => {
     const result = await pool.query(
       `SELECT n.*, c.name AS category, c.slug AS category_slug
        FROM news n LEFT JOIN categories c ON n.category_id=c.id
-       WHERE n.slug=$1 AND n.is_published=true`,
+       WHERE n.slug=$1 AND n.is_published=true AND n.status='approved'`,
       [req.params.slug]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Article not found' });
@@ -131,23 +166,28 @@ router.get('/:slug', async (req, res) => {
   }
 });
 
-// Admin: create
-router.post('/', async (req, res) => {
+// Create news (Admin or Employee)
+router.post('/', authMiddleware, async (req, res) => {
   try {
     const { title, slug, content, excerpt, image, author, category, is_published = true, is_trending = false, created_at } = req.body;
     const category_id = await resolveCategoryId(category);
+    
+    // Determine status based on role
+    const status = (req.admin.role === 'employee') ? 'pending' : 'approved';
+    const created_by = req.admin.id;
+
     let result;
     if (created_at) {
       result = await pool.query(
-        `INSERT INTO news (title, slug, content, excerpt, image, author, category_id, is_published, is_trending, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-        [title, slug, content, excerpt, image, author, category_id, is_published, is_trending, created_at]
+        `INSERT INTO news (title, slug, content, excerpt, image, author, category_id, is_published, is_trending, created_at, status, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+        [title, slug, content, excerpt, image, author, category_id, is_published, is_trending, created_at, status, created_by]
       );
     } else {
       result = await pool.query(
-        `INSERT INTO news (title, slug, content, excerpt, image, author, category_id, is_published, is_trending)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
-        [title, slug, content, excerpt, image, author, category_id, is_published, is_trending]
+        `INSERT INTO news (title, slug, content, excerpt, image, author, category_id, is_published, is_trending, status, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+        [title, slug, content, excerpt, image, author, category_id, is_published, is_trending, status, created_by]
       );
     }
     res.status(201).json(result.rows[0]);
@@ -156,11 +196,12 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Admin: update
-router.put('/:id', async (req, res) => {
+// Admin/Employee: update
+router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const { title, slug, content, excerpt, image, author, category, is_published, is_trending = false, created_at } = req.body;
     const category_id = await resolveCategoryId(category);
+    
     let result;
     if (created_at) {
       result = await pool.query(
@@ -184,8 +225,29 @@ router.put('/:id', async (req, res) => {
   }
 });
 
+// Admin: update status
+router.put('/:id/status', authMiddleware, async (req, res) => {
+  try {
+    if (req.admin.role === 'employee') return res.status(403).json({ error: 'Forbidden' });
+    
+    const { status, rejection_reason } = req.body;
+    if (!['pending', 'approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const result = await pool.query(
+      'UPDATE news SET status=$1, rejection_reason=$2, updated_at=NOW() WHERE id=$3 RETURNING *',
+      [status, status === 'rejected' ? rejection_reason : null, req.params.id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Admin: delete
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', authMiddleware, async (req, res) => {
   try {
     await pool.query('DELETE FROM news WHERE id=$1', [req.params.id]);
     res.json({ message: 'Deleted' });

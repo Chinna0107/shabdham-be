@@ -11,6 +11,7 @@ app.use(express.json());
 
 app.use('/api/general', require('./routes/general'));
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/employees', require('./routes/employees'));
 app.use('/api/news', require('./routes/news'));
 app.use('/api/categories', require('./routes/categories'));
 app.use('/api/breaking-news', require('./routes/breakingNews'));

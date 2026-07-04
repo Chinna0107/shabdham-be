@@ -23,7 +23,7 @@ router.post('/login', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role, allowed_categories: user.allowed_categories || [] } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -33,7 +33,7 @@ router.post('/login', async (req, res) => {
 router.get('/me', authMiddleware, async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, name, email, role, created_at FROM admin_users WHERE id=$1',
+      'SELECT id, name, email, role, allowed_categories, created_at FROM admin_users WHERE id=$1',
       [req.admin.id]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'User not found' });
